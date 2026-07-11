@@ -1,7 +1,7 @@
 {
   "name": "FlowState — River Surf Forecasting",
   "short_name": "FlowState",
-  "description": "Live flows, hydrographs and predictive wave-window alerts for 125 river surf waves across the US and Canada.",
+  "description": "Live flows, hydrographs and predictive wave-window alerts for river surf waves across the US and Canada.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
