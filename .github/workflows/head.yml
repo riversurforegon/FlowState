@@ -1,0 +1,53 @@
+name: Update head-of-park flow
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch USBR and compute head-of-park
+        run: |
+          curl -s 'https://www.usbr.gov/pn-bin/v1/instant.pl?list=beno,ceno,arno&back=8&format=csv' -o usbr.csv
+          python3 - << 'PY'
+          import csv, json, datetime, zoneinfo
+          PT = zoneinfo.ZoneInfo('America/Los_Angeles')
+          rows = list(csv.reader(open('usbr.csv')))
+          hdr = [h.strip().lower() for h in rows[0]]
+          def col(*names):
+              for n in names:
+                  if n in hdr: return hdr.index(n)
+              return -1
+          bi, ci, ai = col('beno_q','beno_qr'), col('ceno_qc','ceno_q'), col('arno_qc','arno_q')
+          assert min(bi,ci,ai) > 0, 'flow columns not found: '+','.join(hdr)
+          out = []
+          for r in rows[1:]:
+              if len(r) <= max(bi,ci,ai): continue
+              ds = r[0].strip()
+              t = None
+              for fmt in ('%Y-%m-%d %H:%M','%Y-%m-%dT%H:%M','%m/%d/%Y %H:%M'):
+                  try:
+                      t = datetime.datetime.strptime(ds, fmt).replace(tzinfo=PT); break
+                  except ValueError: pass
+              if t is None: continue
+              try:
+                  b, c, a = float(r[bi]), float(r[ci]), float(r[ai])
+              except ValueError: continue
+              if min(b,c,a) < -900: continue
+              out.append([int(t.timestamp()*1000), round(max(0.0, b-c-a), 1)])
+          out.sort()
+          json.dump({'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                     'series': out[-800:]}, open('head.json','w'))
+          print('head-of-park points:', len(out), '| latest:', out[-1] if out else None)
+          PY
+      - name: Commit
+        run: |
+          git config user.name 'flowstate-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add head.json
+          git diff --cached --quiet || git commit -m 'Update head-of-park flow data'
+          git push
