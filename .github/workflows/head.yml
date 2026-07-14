@@ -27,8 +27,9 @@ jobs:
                   if n in hdr: return hdr.index(n)
               return -1
           bi, ci, ai = col('beno_q','beno_qr'), col('ceno_qc','ceno_q'), col('arno_qc','arno_q')
+          ti = col('beno_wf','beno_wk','beno_wt')   # water temperature column, if the station carries one
           assert min(bi,ci,ai) > 0, 'flow columns not found: '+','.join(hdr)
-          out = []
+          out = []; temp_c = None
           for r in rows[1:]:
               if len(r) <= max(bi,ci,ai): continue
               ds = r[0].strip(); t = None
@@ -40,10 +41,18 @@ jobs:
               b, c, a = num(r[bi]), num(r[ci]), num(r[ai])
               if None in (b,c,a) or min(b,c,a) < -900: continue
               out.append([int(t.timestamp()*1000), round(max(0.0, b-c-a-REACH_LOSS), 1)])
+              if ti > 0 and len(r) > ti:
+                  w = num(r[ti])
+                  if w is not None and -900 < w:
+                      # unit heuristic: liquid water can't be 12 F or 45 C in the Deschutes
+                      if 0 < w < 32: temp_c = round(w, 1)          # already Celsius
+                      elif 32 <= w < 90: temp_c = round((w-32)*5/9, 1)  # Fahrenheit
           out.sort()
-          json.dump({'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                     'series': out[-800:]}, open('head.json','w'))
-          print('head-of-park points:', len(out), '| latest:', out[-1] if out else None)
+          doc = {'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 'series': out[-800:]}
+          if temp_c is not None: doc['temp_c'] = temp_c
+          json.dump(doc, open('head.json','w'))
+          print('head-of-park points:', len(out), '| latest:', out[-1] if out else None, '| water temp C:', temp_c)
           PY
       - name: Commit
         run: |
