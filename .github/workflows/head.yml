@@ -9,29 +9,40 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Fetch USBR and compute head-of-park
         run: |
-          curl -s 'https://www.usbr.gov/pn-bin/v1/instant.pl?list=beno,ceno,arno&back=8&format=csv' -o usbr.csv
+          # retry up to 4 times — USBR intermittently serves HTML error pages
+          for i in 1 2 3 4; do
+            curl -s -A 'FlowStateSurf/1.0 (flowstatesurf.org relay)' \
+              'https://www.usbr.gov/pn-bin/v1/instant.pl?list=beno,ceno,arno,beno%20wf&back=8&format=csv' -o usbr.csv
+            if head -1 usbr.csv | grep -qi 'datetime\|beno'; then break; fi
+            echo "attempt $i got non-CSV response, retrying in 20s..."
+            sleep 20
+          done
           python3 - << 'PY'
-          import csv, json, datetime, zoneinfo, re
+          import csv, json, datetime, zoneinfo, re, sys, os
           PT = zoneinfo.ZoneInfo('America/Los_Angeles')
           REACH_LOSS = 101.5  # calibrated Benham Falls -> head-of-park channel loss (cfs)
           def num(s):
               m = re.match(r'\s*(-?\d+(?:\.\d+)?)', s or '')
               return float(m.group(1)) if m else None
           rows = list(csv.reader(open('usbr.csv')))
-          hdr = [h.strip().lower() for h in rows[0]]
+          hdr = [h.strip().lower() for h in rows[0]] if rows else []
           def col(*names):
               for n in names:
                   if n in hdr: return hdr.index(n)
               return -1
           bi, ci, ai = col('beno_q','beno_qr'), col('ceno_qc','ceno_q'), col('arno_qc','arno_q')
-          ti = col('beno_wf','beno_wk','beno_wt')   # water temperature column, if the station carries one
-          assert min(bi,ci,ai) > 0, 'flow columns not found: '+','.join(hdr)
-          out = []; temp_c = None
+          wi = col('beno_wf')
+          if min(bi, ci, ai) <= 0:
+              # USBR is down or served an error page — keep last head.json, succeed quietly
+              print('USBR unavailable (headers: %s) — keeping existing head.json' % ','.join(hdr[:6]))
+              open('skip_commit', 'w').write('1')
+              sys.exit(0)
+          out = []; temps = []
           for r in rows[1:]:
-              if len(r) <= max(bi,ci,ai): continue
+              if len(r) <= max(bi, ci, ai): continue
               ds = r[0].strip(); t = None
               for fmt in ('%Y-%m-%d %H:%M','%Y-%m-%dT%H:%M','%m/%d/%Y %H:%M'):
                   try:
@@ -39,23 +50,27 @@ jobs:
                   except ValueError: pass
               if t is None: continue
               b, c, a = num(r[bi]), num(r[ci]), num(r[ai])
-              if None in (b,c,a) or min(b,c,a) < -900: continue
+              if None in (b, c, a) or min(b, c, a) < -900: continue
               out.append([int(t.timestamp()*1000), round(max(0.0, b-c-a-REACH_LOSS), 1)])
-              if ti > 0 and len(r) > ti:
-                  w = num(r[ti])
+              if wi >= 0 and len(r) > wi:
+                  w = num(r[wi])
                   if w is not None and -900 < w:
-                      # unit heuristic: liquid water can't be 12 F or 45 C in the Deschutes
-                      if 0 < w < 32: temp_c = round(w, 1)          # already Celsius
-                      elif 32 <= w < 90: temp_c = round((w-32)*5/9, 1)  # Fahrenheit
+                      # beno wf reports water temp; heuristic: >40 means Fahrenheit
+                      temps.append(round((w-32)*5/9, 1) if w > 40 else round(w, 1))
+          if not out:
+              print('no usable rows — keeping existing head.json')
+              open('skip_commit', 'w').write('1')
+              sys.exit(0)
           out.sort()
           doc = {'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                  'series': out[-800:]}
-          if temp_c is not None: doc['temp_c'] = temp_c
+          if temps: doc['temp_c'] = temps[-1]
           json.dump(doc, open('head.json','w'))
-          print('head-of-park points:', len(out), '| latest:', out[-1] if out else None, '| water temp C:', temp_c)
+          print('head-of-park points:', len(out), '| latest:', out[-1], '| temp_c:', doc.get('temp_c'))
           PY
       - name: Commit
         run: |
+          if [ -f skip_commit ]; then echo "skipping commit — no fresh data this run"; exit 0; fi
           git config user.name 'flowstate-bot'
           git config user.email 'actions@users.noreply.github.com'
           git add head.json
