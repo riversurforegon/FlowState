@@ -16,7 +16,7 @@ jobs:
           for i in 1 2 3 4; do
             curl -s -A 'FlowStateSurf/1.0 (flowstatesurf.org relay)' \
               'https://www.usbr.gov/pn-bin/v1/instant.pl?list=beno,ceno,arno,beno%20wf&back=8&format=csv' -o usbr.csv
-            if head -1 usbr.csv | grep -qi 'datetime\|beno'; then break; fi
+            if grep -qi '^datetime' usbr.csv; then break; fi
             echo "attempt $i got non-CSV response, retrying in 20s..."
             sleep 20
           done
@@ -27,7 +27,10 @@ jobs:
           def num(s):
               m = re.match(r'\s*(-?\d+(?:\.\d+)?)', s or '')
               return float(m.group(1)) if m else None
-          rows = list(csv.reader(open('usbr.csv')))
+          raw = open('usbr.csv').read().splitlines()
+          # USBR CGI currently leaks HTTP headers into the body — skip to the real CSV header
+          start = next((i for i, l in enumerate(raw) if l.lower().startswith('datetime')), -1)
+          rows = list(csv.reader(raw[start:])) if start >= 0 else []
           hdr = [h.strip().lower() for h in rows[0]] if rows else []
           def col(*names):
               for n in names:
