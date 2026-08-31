@@ -1,6 +1,6 @@
 {
-  "name": "FlowState — River Surf Forecasting",
-  "short_name": "FlowState",
+  "name": "BetaSurf — River Surf Forecasting",
+  "short_name": "BetaSurf",
   "description": "Live flows, hydrographs and predictive wave-window alerts for river surf waves across the US and Canada.",
   "start_url": "./",
   "scope": "./",
